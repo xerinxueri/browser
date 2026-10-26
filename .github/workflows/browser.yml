@@ -1,32 +1,28 @@
 name: Browser
 on:
-  workflow_dispatch:
+  push:
+    branches: [main]
 
 jobs:
   browser:
     runs-on: ubuntu-latest
     timeout-minutes: 360
+    permissions:
+      contents: write
     steps:
+      - uses: actions/checkout@v4
       - name: Start Browser + Tunnel
         run: |
           export DEBIAN_FRONTEND=noninteractive
-
-          echo "=== [1/7] Installing packages ==="
           sudo apt-get update -qq
-          sudo apt-get install -y -qq tigervnc-standalone-server tigervnc-common novnc websockify openbox dbus-x11 x11-xserver-utils wget fonts-liberation fonts-noto-cjk 2>/dev/null
-
-          echo "=== [2/7] Installing Chrome ==="
+          sudo apt-get install -y -qq tigervnc-standalone-server tigervnc-common novnc websockify openbox dbus-x11 x11-xserver-utils wget fonts-liberation 2>/dev/null
           wget -q https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
           sudo dpkg -i google-chrome-stable_current_amd64.deb 2>/dev/null || true
           sudo apt-get -f install -y -qq 2>/dev/null
-
-          echo "=== [3/7] Setting VNC password ==="
           mkdir -p ~/.vnc
           echo "xerin2026" | vncpasswd -f > ~/.vnc/passwd
           chmod 600 ~/.vnc/passwd
-
-          echo "=== [4/7] Creating desktop config ==="
-          cat > ~/.vnc/xstartup << 'XSTARTUP'
+          cat > ~/.vnc/xstartup << 'XS'
           #!/bin/bash
           unset SESSION_MANAGER
           unset DBUS_SESSION_BUS_ADDRESS
@@ -34,27 +30,33 @@ jobs:
           openbox &
           sleep 2
           google-chrome --no-sandbox --disable-gpu --no-first-run --disable-dev-shm-usage --start-fullscreen "https://www.google.com" &
-          XSTARTUP
+          XS
           chmod +x ~/.vnc/xstartup
-
-          echo "=== [5/7] Starting VNC server ==="
           vncserver -kill :1 2>/dev/null || true
           vncserver :1 -geometry 1280x720 -depth 24 -localhost yes
-
-          echo "=== [6/7] Starting noVNC web interface ==="
           sudo ln -sf /usr/share/novnc/vnc.html /usr/share/novnc/index.html 2>/dev/null || true
           websockify --web /usr/share/novnc 6080 localhost:5901 &
           sleep 3
-
-          echo "=== [7/7] Installing Cloudflare Tunnel ==="
           wget -q "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64" -O /tmp/cloudflared
           chmod +x /tmp/cloudflared
-
-          echo ""
-          echo "============================================"
-          echo "  VNC Password: xerin2026"
-          echo "  Look for trycloudflare.com URL below!"
-          echo "============================================"
-          echo ""
-
-          /tmp/cloudflared tunnel --url http://localhost:6080
+          /tmp/cloudflared tunnel --url http://localhost:6080 > /tmp/tunnel.log 2>&1 &
+          echo "Waiting for tunnel..."
+          for i in $(seq 1 30); do
+            sleep 2
+            TUNNEL_URL=$(grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' /tmp/tunnel.log 2>/dev/null | head -1)
+            if [ -n "$TUNNEL_URL" ]; then break; fi
+          done
+          if [ -z "$TUNNEL_URL" ]; then
+            echo "ERROR: No URL found"
+            cat /tmp/tunnel.log
+            exit 1
+          fi
+          echo "Tunnel URL: $TUNNEL_URL"
+          echo "$TUNNEL_URL" > tunnel-url.txt
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add tunnel-url.txt
+          git commit -m "Update tunnel URL [skip ci]"
+          git push
+          echo "URL saved to tunnel-url.txt"
+          tail -f /tmp/tunnel.log
